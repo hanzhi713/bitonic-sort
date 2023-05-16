@@ -1,12 +1,11 @@
 #include <cstdint>
-#include <utility>
 #include <type_traits>
+#include <utility>
 
 namespace bitonic {
 
-template <typename InputIt> struct Compare {
-  using val = decltype(*std::declval<InputIt>()) &;
-  __device__ __host__ __forceinline__ bool operator()(val a, val b) const { return a < b; }
+template <typename K> struct Compare {
+  __device__ __host__ __forceinline__ bool operator()(const K &a, const K &b) const { return a < b; }
 };
 
 struct DummyTag {};
@@ -23,7 +22,7 @@ __forceinline__ __device__ void calcDataBlockLength(uint32_t &offset, uint32_t &
   dataBlockLength = min(arrayLength - offset, elemsPerThreadBlock);
 }
 
-template <typename V> inline constexpr bool NotDummy = !std::is_same<V, DummyTag *>::value;
+template <typename V> constexpr bool NotDummy = !std::is_same<V, DummyTag>::value;
 
 /*
 Executes one step of bitonic merge.
@@ -32,7 +31,7 @@ merge. "TableLen" is needed for global bitonic merge to verify if elements are
 still inside array boundaries.
 */
 template <typename K, typename V, uint32_t NT, bool isFirstStepOfPhase, typename Compare>
-__forceinline__ __device__ void bitonicMergeStep(K keys, V values, uint32_t offsetGlobal, uint32_t tableLen,
+__forceinline__ __device__ void bitonicMergeStep(K *keys, V *values, uint32_t offsetGlobal, uint32_t tableLen,
                                                  uint32_t dataBlockLen, uint32_t stride, Compare &comp) {
   // Every thread compares and exchanges 2 elements
   for (uint32_t tx = threadIdx.x; tx < dataBlockLen >> 1; tx += NT) {
@@ -73,21 +72,19 @@ __forceinline__ __device__ void bitonicMergeStep(K keys, V values, uint32_t offs
   }
 }
 
-template <typename T> using pointed_t = std::remove_reference_t<decltype(*std::declval<T>())>;
-
-template <typename V, uint32_t NT, uint32_t VT> __device__ __forceinline__ pointed_t<V> *getValueSmem() {
-  __shared__ pointed_t<V> valuesTile[NT * VT];
+template <typename V, uint32_t NT, uint32_t VT> __device__ __forceinline__ V *getValueSmem() {
+  __shared__ V valuesTile[NT * VT];
   return valuesTile;
 }
 
-template <uint32_t NT, uint32_t VT> __device__ __forceinline__ DummyTag *getValueSmem<DummyTag *>() { return nullptr; }
+template <uint32_t NT, uint32_t VT> __device__ __forceinline__ DummyTag *getValueSmem<DummyTag>() { return nullptr; }
 
 /*
 Sorts sub-blocks of input data with NORMALIZED bitonic sort.
 */
 template <typename K, typename V, uint32_t NT, uint32_t VT, typename Compare>
-__global__ void bitonicSortKernel(K keys, V values, uint32_t tableLen, Compare comp) {
-  __shared__ pointed_t<K> keysTile[NT * VT];
+__global__ void bitonicSortKernel(K *keys, V *values, uint32_t tableLen, Compare comp) {
+  __shared__ K keysTile[NT * VT];
   auto valuesTile = getValueSmem<V, NT, VT>();
 
   uint32_t offset, dataBlockLength;
@@ -128,8 +125,8 @@ Local bitonic merge for sections, where stride IS LOWER OR EQUAL than max shared
 memory size.
 */
 template <typename K, typename V, uint32_t NT, uint32_t VT, bool isFirstStepOfPhase, typename Compare>
-__global__ void bitonicMergeLocalKernel(K keys, V values, uint32_t tableLen, uint32_t step, Compare comp) {
-  __shared__ pointed_t<K> keysTile[NT * VT];
+__global__ void bitonicMergeLocalKernel(K *keys, V *values, uint32_t tableLen, uint32_t step, Compare comp) {
+  __shared__ K keysTile[NT * VT];
   auto valuesTile = getValueSmem<V, NT, VT>();
 
   bool isFirstStepOfPhaseCopy = isFirstStepOfPhase; // isFirstStepOfPhase is not editable (constant)
@@ -168,7 +165,7 @@ Global bitonic merge for sections, where stride IS GREATER than max shared
 memory size.
 */
 template <typename K, typename V, uint32_t NT, uint32_t VT, bool isFirstStepOfPhase, typename Compare>
-__global__ void bitonicMergeGlobalKernel(K keys, V values, uint32_t tableLen, uint32_t step, Compare comp) {
+__global__ void bitonicMergeGlobalKernel(K *keys, V *values, uint32_t tableLen, uint32_t step, Compare comp) {
   uint32_t offset, dataBlockLength;
   calcDataBlockLength<NT, VT>(offset, dataBlockLength, tableLen);
 
@@ -207,7 +204,7 @@ Sorts data with parallel NORMALIZED BITONIC SORT.
 template <uint32_t threadsBitonicSort = 128, uint32_t elemsBitonicSort = 4, uint32_t threadsGlobalMerge = 256,
           uint32_t elemsGlobalMerge = 4, uint32_t threadsLocalMerge = 256, uint32_t elemsLocalMerge = 4, typename K,
           typename V, typename Compare = Compare<K>>
-void sort_by_key(K d_keys, V d_values, uint32_t arrayLength, Compare comp = {}) {
+void sort_by_key(K *keys_first, V *values_first, uint32_t arrayLength, Compare comp = {}) {
   uint32_t arrayLenPower2 = nextPowerOf2(arrayLength);
 
   uint32_t elemsPerBlockBitonicSort = threadsBitonicSort * elemsBitonicSort;
@@ -223,7 +220,8 @@ void sort_by_key(K d_keys, V d_values, uint32_t arrayLength, Compare comp = {}) 
   uint32_t elemsPerThreadBlock = threadsBitonicSort * elemsBitonicSort;
 
   bitonicSortKernel<K, V, threadsBitonicSort, elemsBitonicSort>
-      <<<(arrayLength - 1) / elemsPerThreadBlock + 1, threadsBitonicSort>>>(d_keys, d_values, arrayLength, comp);
+      <<<(arrayLength - 1) / elemsPerThreadBlock + 1, threadsBitonicSort>>>(keys_first, values_first, arrayLength,
+                                                                            comp);
 
   // Bitonic merge
   for (uint32_t phase = phasesBitonicSort + 1; phase <= phasesAll; phase++) {
@@ -235,11 +233,11 @@ void sort_by_key(K d_keys, V d_values, uint32_t arrayLength, Compare comp = {}) 
       if (phase == step) {
         bitonicMergeGlobalKernel<K, V, threadsGlobalMerge, elemsGlobalMerge, true>
             <<<(arrayLength - 1) / (threadsGlobalMerge * elemsGlobalMerge) + 1, threadsGlobalMerge>>>(
-                d_keys, d_values, arrayLength, step, comp);
+                keys_first, values_first, arrayLength, step, comp);
       } else {
         bitonicMergeGlobalKernel<K, V, threadsGlobalMerge, elemsGlobalMerge, false>
             <<<(arrayLength - 1) / (threadsGlobalMerge * elemsGlobalMerge) + 1, threadsGlobalMerge>>>(
-                d_keys, d_values, arrayLength, step, comp);
+                keys_first, values_first, arrayLength, step, comp);
       }
       step--;
     }
@@ -249,11 +247,11 @@ void sort_by_key(K d_keys, V d_values, uint32_t arrayLength, Compare comp = {}) 
     if (phase == step) {
       bitonicMergeLocalKernel<K, V, threadsLocalMerge, elemsLocalMerge, true>
           <<<(arrayLength - 1) / (threadsLocalMerge * elemsLocalMerge) + 1, threadsLocalMerge>>>(
-              d_keys, d_values, arrayLength, step, comp);
+              keys_first, values_first, arrayLength, step, comp);
     } else {
       bitonicMergeLocalKernel<K, V, threadsLocalMerge, elemsLocalMerge, false>
           <<<(arrayLength - 1) / (threadsLocalMerge * elemsLocalMerge) + 1, threadsLocalMerge>>>(
-              d_keys, d_values, arrayLength, step, comp);
+              keys_first, values_first, arrayLength, step, comp);
     }
   }
 }
@@ -261,9 +259,9 @@ void sort_by_key(K d_keys, V d_values, uint32_t arrayLength, Compare comp = {}) 
 template <uint32_t threadsBitonicSort = 128, uint32_t elemsBitonicSort = 4, uint32_t threadsGlobalMerge = 256,
           uint32_t elemsGlobalMerge = 4, uint32_t threadsLocalMerge = 256, uint32_t elemsLocalMerge = 4, typename K,
           typename Compare = Compare<K>>
-void sort(K d_keys, uint32_t arrayLength, Compare comp = {}) {
+void sort(K *keys_first, uint32_t arrayLength, Compare comp = {}) {
   sort_by_key<threadsBitonicSort, elemsBitonicSort, threadsGlobalMerge, elemsGlobalMerge, threadsLocalMerge,
-              elemsLocalMerge, K, DummyTag *, Compare>(d_keys, nullptr, arrayLength, comp);
+              elemsLocalMerge, K, DummyTag, Compare>(keys_first, nullptr, arrayLength, comp);
 }
 
-}
+} // namespace bitonic
