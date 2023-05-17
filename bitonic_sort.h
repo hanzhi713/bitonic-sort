@@ -101,13 +101,12 @@ __global__ void bitonicSortKernel(K *keys, V *values, uint32_t tableLen, Compare
   // Bitonic sort PHASES
   for (uint32_t subBlockSize = 1; subBlockSize < dataBlockLength; subBlockSize <<= 1) {
     // Bitonic merge STEPS
-    for (uint32_t stride = subBlockSize; stride > 0; stride >>= 1) {
-      if (stride == subBlockSize) {
-        bitonicMergeStep<K, V, NT, true>(keysTile, valuesTile, 0, dataBlockLength, dataBlockLength, stride, comp);
-      } else {
-        bitonicMergeStep<K, V, NT, false>(keysTile, valuesTile, 0, dataBlockLength, dataBlockLength, stride, comp);
-      }
-
+    uint32_t stride = subBlockSize;
+    bitonicMergeStep<K, V, NT, true>(keysTile, valuesTile, 0, dataBlockLength, dataBlockLength, stride, comp);
+    stride >>= 1;
+    __syncthreads();
+    for (; stride > 0; stride >>= 1) {
+      bitonicMergeStep<K, V, NT, false>(keysTile, valuesTile, 0, dataBlockLength, dataBlockLength, stride, comp);
       __syncthreads();
     }
   }

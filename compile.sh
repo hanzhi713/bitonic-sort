@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
-nvcc -O2 -I. -lcuda -arch=compute_70 -code=sm_70 -std=c++14 \
+nvcc -O3 -I. -lcuda -arch=compute_70 -code=sm_70 -std=c++14 \
 --expt-extended-lambda --expt-relaxed-constexpr -lineinfo \
-tests.cu
+$1
 
 echo "compile success"
 rm -f report*
