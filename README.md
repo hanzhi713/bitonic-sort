@@ -1,4 +1,4 @@
-# Bitonic Sort
+# CUDA Bitonic Sort
 
 If you're looking for a in-place GPU comparison based sorting library that requires zero extra GPU memory, this might be what you're looking for. This repository contains a header-only implementation of bitonic sort. It is not the fastest sorting algorithm, but it might be good enough for your application in which GPU memory is more precious. 
 
