@@ -28,16 +28,8 @@ void sort_by_key_test() {
     thrust::sort_by_key(d_keys.begin(), d_keys.end(), d_values.begin());
     bitonic::sort_by_key(d_keys_copy.data().get(), d_values_copy.data().get(), num_items);
 
-    if (d_keys != d_keys_copy) {
+    if (d_keys != d_keys_copy || d_values != d_values_copy) {
       std::cout << "test " << i << " failed" << std::endl;
-      thrust::host_vector<uint32_t> h_keys = d_values;
-      thrust::host_vector<uint32_t> h_keys2 = d_values_copy;
-
-      for (int j = 0; j < num_items; j++) {
-        if (h_keys2[j] != h_keys[j])
-          std::cout << h_keys[j] << "," << h_keys2[j] << '\n';
-      }
-      std::cout << std::endl;
     } else {
       std::cout << "test " << i << " passed" << std::endl;
     }
@@ -57,7 +49,9 @@ struct __align__(4) CustomData {
 struct Compare {
   int idx;
   Compare(int idx) : idx(idx) {}
-  __device__ __host__ bool operator()(CustomData &a, CustomData &b) const { return a.data[idx] < b.data[idx]; }
+  __device__ __host__ bool operator()(CustomData &a, CustomData &b) const {
+    return a.data[idx] < b.data[idx];
+  }
 };
 
 void sort_custom_compare_stable_test() {
@@ -76,7 +70,7 @@ void sort_custom_compare_stable_test() {
     thrust::device_vector<CustomData> d_keys_copy = d_keys;
     for (int j = 0; j < 4; j++) {
       thrust::stable_sort(d_keys.begin(), d_keys.end(), Compare(j));
-      bitonic::sort(d_keys_copy.data().get(), num_items, Compare(j));
+      bitonic::sort(d_keys_copy.data().get(), num_items, 0, Compare(j));
     }
 
     if (d_keys != d_keys_copy) {
@@ -86,6 +80,16 @@ void sort_custom_compare_stable_test() {
     }
   }
 }
+
+template <int sz> struct SzSt {
+  char data[sz];
+};
+
+template <int sz> struct CpSzSt {
+  __device__ __host__ __forceinline__ bool operator()(const SzSt<sz> &a, const SzSt<sz> &b) const {
+    return a.data[0] < b.data[0];
+  }
+};
 
 int main() {
   sort_by_key_test();

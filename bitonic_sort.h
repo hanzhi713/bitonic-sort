@@ -226,14 +226,19 @@ uint32_t nextPowerOf2(uint32_t value) {
   return value;
 }
 
+/**
+ * Find the largest VT (value per thread) possible for a kernel. This is mainly limited by the
+ * total amount of shared memory available.
+ */
 template <uint32_t KVSize, typename F>
-void calcBlock(F func, int max_smem, int sm_count, int &block_size, int &VT) {
+int calcBlock(F func, int max_smem, int sm_count, int &block_size, int &VT) {
   int grid;
   BITONIC_CUDA_TRY(cudaOccupancyMaxPotentialBlockSize(&grid, &block_size, func));
-  // int block_per_sm = grid / sm_count;
-  int block_per_sm = 1;
+  int block_per_sm = grid / sm_count;
   int values_per_block = max_smem / block_per_sm / KVSize;
   VT = values_per_block / block_size;
+  // in the rare case when shared mem size is not enough to process 1 k-v pair per block, reduce the
+  // block size.
   while (VT == 0) {
     block_size -= 32;
     if (block_size == 0) {
@@ -243,8 +248,10 @@ void calcBlock(F func, int max_smem, int sm_count, int &block_size, int &VT) {
   }
   // round down to a power of 2
   VT = 1 << (uint32_t)log2((double)VT);
+  int smem_sz = VT * block_size * KVSize;
   BITONIC_CUDA_TRY(
-      cudaFuncSetAttribute(func, cudaFuncAttributeMaxDynamicSharedMemorySize, max_smem));
+      cudaFuncSetAttribute(func, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_sz));
+  return smem_sz;
 }
 
 /**
@@ -269,22 +276,23 @@ void sort_by_key(K *keys_first, V *values_first, uint32_t arrayLength, cudaStrea
     BITONIC_CUDA_TRY(cudaGetDevice(&device_id));
     int max_smem, resv, sm_count;
     BITONIC_CUDA_TRY(
-        cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device_id));
+        cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, device_id));
     BITONIC_CUDA_TRY(
         cudaDeviceGetAttribute(&resv, cudaDevAttrReservedSharedMemoryPerBlock, device_id));
     BITONIC_CUDA_TRY(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device_id));
 
     max_smem -= resv;
 
-    calcBlock<KVSize>(bitonicSortKernel<K, V, CompareT>, max_smem, sm_count, threadsBS, elemsBS);
-    calcBlock<KVSize>(bitonicMergeLocalKernel<K, V, true, CompareT>, max_smem, sm_count, threadsLM,
-                      elemsLM);
+    (void)calcBlock<KVSize>(bitonicSortKernel<K, V, CompareT>, max_smem, sm_count, threadsBS,
+                            elemsBS);
+    int smem_sz = calcBlock<KVSize>(bitonicMergeLocalKernel<K, V, true, CompareT>, max_smem,
+                                    sm_count, threadsLM, elemsLM);
     BITONIC_CUDA_TRY(cudaFuncSetAttribute(bitonicMergeLocalKernel<K, V, false, CompareT>,
-                                          cudaFuncAttributeMaxDynamicSharedMemorySize, max_smem));
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize, smem_sz));
     int grid;
     BITONIC_CUDA_TRY(cudaOccupancyMaxPotentialBlockSize(
         &grid, &threadsGM, bitonicMergeGlobalKernel<K, V, true, CompareT>));
-    std::cout << elemsBS << " " << elemsLM << " " << elemsGM << " " << threadsBS << " " << threadsLM
+    std::cerr << elemsBS << " " << elemsLM << " " << elemsGM << " " << threadsBS << " " << threadsLM
               << " " << threadsGM << std::endl;
   }
 

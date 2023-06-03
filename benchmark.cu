@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cub/device/device_merge_sort.cuh>
 #include <cub/device/device_radix_sort.cuh>
+#include <fstream>
 #include <random>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
@@ -13,8 +14,9 @@ template <typename T> struct Compare {
   __host__ __device__ bool operator()(const T &a, const T &b) const { return a < b; }
 };
 
-template <typename T>
-void test() {
+template <typename T> void test(std::string name) {
+  std::ofstream out(name);
+
   std::mt19937 rand(std::chrono::steady_clock::now().time_since_epoch().count());
   uint32_t num_items = 1000;
 
@@ -39,11 +41,11 @@ void test() {
     cudaDeviceSynchronize();
     auto start = std::chrono::steady_clock::now();
     size_t temp_sz;
-    cub::DeviceMergeSort::SortPairs(nullptr, temp_sz, d_keys_copy.begin(), d_values_copy.begin(), num_items,
-                                    Compare<T>());
+    cub::DeviceMergeSort::SortPairs(nullptr, temp_sz, d_keys_copy.begin(), d_values_copy.begin(),
+                                    num_items, Compare<T>());
     // std::cout << temp_sz << std::endl;
-    cub::DeviceMergeSort::SortPairs(cub_ws, temp_sz, d_keys_copy.begin(), d_values_copy.begin(), num_items,
-                                    Compare<T>());
+    cub::DeviceMergeSort::SortPairs(cub_ws, temp_sz, d_keys_copy.begin(), d_values_copy.begin(),
+                                    num_items, Compare<T>());
     cudaDeviceSynchronize();
     auto merge_sort_time = (std::chrono::steady_clock::now() - start).count() * 1e-6;
 
@@ -52,7 +54,7 @@ void test() {
 
     cudaDeviceSynchronize();
     start = std::chrono::steady_clock::now();
-    bitonic::sort_by_key<1024, 2, 1024, 2, 1024, 2>(d_keys_copy.data().get(), d_values_copy.data().get(), num_items);
+    bitonic::sort_by_key(d_keys_copy.data().get(), d_values_copy.data().get(), num_items);
     cudaDeviceSynchronize();
     auto bitonic_sort_time = (std::chrono::steady_clock::now() - start).count() * 1e-6;
 
@@ -66,12 +68,13 @@ void test() {
     cudaDeviceSynchronize();
     auto radix_sort_time = (std::chrono::steady_clock::now() - start).count() * 1e-6;
 
-    std::cout << ((float)num_items) / 1000000 << ',' << merge_sort_time << ',' << radix_sort_time << ','
-              << bitonic_sort_time << std::endl;
+    out << ((float)num_items) / 1000000 << ',' << merge_sort_time << ',' << radix_sort_time << ','
+        << bitonic_sort_time << std::endl;
     num_items *= 2;
   }
 }
 
 int main() {
-    test<uint32_t>();
+  test<uint32_t>("result_32.csv");
+  test<uint64_t>("result_64.csv");
 }
