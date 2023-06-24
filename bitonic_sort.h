@@ -347,3 +347,4 @@ void sort(K *keys_first, uint32_t arrayLength, cudaStream_t stream = 0, CompareT
 }
 
 } // namespace bitonic
+
