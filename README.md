@@ -57,3 +57,7 @@ The main takeaway is that if performance is all you need, then CUB/thrust might 
 ### A100 SXM4 80GB
 
 ![bench](benchmark-a100.png)
+
+### H100 80GB
+
+![bench](benchmark-h100.png)
